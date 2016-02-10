@@ -1,0 +1,920 @@
+Extract Gene Partners and Analyze Pairings
+========================================================
+
+Getting Data
+--------------------------------------------------------
+The data is found on the Catalogue of Somatic Mutations in Cancer (COSMIC)
+website here:
+
+> cancer.sanger.ac.uk/cancergenome/projects/cosmic/download.
+
+The particular file is under the "Complete Fusion Export" tab. The data is
+described as:
+
+> All gene fusion mutation data from the current release in a tab
+> seperated file (CosmicFusionExport)
+
+Once the data has been downloaded and uncompressed, the file you get is in a
+tab-separated format but R works better in comma-separated formatted files. I
+have taken the file into vim to quickly change the `.tsv` file into a `.csv`
+file with the following command: `:%s/\t/,/g`. The command will remove the tabs
+(denoted with `\t`) and replace the with commas (denoted with the comma symbol,
+",").
+
+Load Fusion Data
+--------------------------------------------------------
+This analysis is meant to extract the gene pairings from the cosmicFusion data
+frame. Here is a snipet of the raw data:
+
+```{r loadFusionData, cache=TRUE}
+# change the name of the file as necessary
+cosmicFusion <- read.csv("../data/CosmicFusionExport_v69_310514.csv",
+                         header=TRUE,
+                         row.names=NULL)
+
+head(cosmicFusion) # see a sample of what the data looks like
+dim(cosmicFusion) # see how large the dataset
+```
+
+Under "Fusion_Descriptions," there contains information about the directionality
+of the gene fusion. The letters before each set of brackets are the genes
+representing the 5' and 3' genes in the fusion. The 5' gene is first and the 3'
+gene is second.
+
+**NOTE: There was a error in the original data file imported in Line 11620.
+There was a missing left bracket so my separation algorithm implemented later on
+failed for that line.**
+
+Goal
+--------------------------------------------------------
+The goal of this document is to extract only the gene fusion pairings into a
+single data frame with the first column being the 5' gene partner and the second
+column be the 3' gene partner. Another element we must take into account is the
+"reason." The reason for each gene fusion is either "Observed mRNA" or "Inferred
+Breakpoint." We will focus on the "Observed mRNA" reasons to make the analysis
+easier.
+
+Focus on Description Data
+--------------------------------------------------------
+We know that we need to focus on the "Fusion_Description" and "Reason" columns
+so we shall save it in another data frame.
+
+```{r resaveData}
+fusionDescription <- cosmicFusion[,8:9] # save Descriptions and Reason
+head(fusionDescription) # show beginning of new data frame
+```
+
+Remove Empty Cells
+--------------------------------------------------------
+There are many empty spaces in between the data we want. Let us remove these
+spaces and keep only the cells with information in them.
+
+```{r removeEmpty}
+dim(fusionDescription)[1] # number of fusions at this step
+fusionDescription <- fusionDescription[fusionDescription[,1] != "", ] # remove spaces
+Description <- as.character(fusionDescription[ ,1]) # to change descriptions
+Reason <- as.character(fusionDescription[ ,2]) # to change reasons
+rawFusions <- cbind(Description, Reason) # put them together
+rawFusions <- rawFusions[ ,1] # keep just the descriptions
+head(rawFusions)
+length(rawFusions) # number of fusions left
+```
+
+Note on Inferred Breakpoint/Observed mRNA
+--------------------------------------------------------
+In the data source, there are two categories for the genes: inferred breakpoint
+or observed mRNA. The difference between the two are highlighted on the COSMIC
+website.
+
+Inferred breakpoints are when the literature reports more than one transcript
+per sample, implying that there are multiple variants. The observed mRNA are
+determined from experimental measures.
+
+Because they are still valid variants of the sequences, we have decided to keep
+them in the analysis.
+
+Source: http://cancer.sanger.ac.uk/cosmic/help/fusion/overview
+
+Plan to Convert Single-line Elements to Data Frame
+--------------------------------------------------------
+Now that we have only the elements we need, we can proceed in separating the
+relavent data in the array we created.
+
+The general structure of the description is:
+
+> 5GENE{ID}:r.BEGIN_END_3GENE{ID}:r.BEGIN_END
+
+There are also cases where there is no information of where the breakpoints are,
+so we need to take those into account as well. Those will look like this:
+
+> 5GENE{ID}:r.?_3GENE{ID}:r.?
+
+We will not consider those cases with unknown breakpoints, inverted genes,
+insertions, or complex/multiple fusion partners.
+
+To separate the string, we need to consider multiple characters:
+
+- keep the 5' and 3' gene name
+- remove ID between the both sets of brackets
+- keep the breakpoints for 5' and 3' gene
+- ignore inverted genes (there is an 'o' character in front of the 3' gene)
+- ignore the complex gene fusions with multiple partners
+- ignore breakpoints in intron regions (marked with '+' and '-' signs)
+- ignore fusions with unknown breakpoints (labeled with a question mark in the
+  breakpoint syntax)
+
+Remove Duplicates
+--------------------------------------------------------
+```{r removeDuplicates}
+# remove duplicates before doing anything else
+head(rawFusions)
+length(rawFusions)
+uniqueFusions <- rawFusions[!duplicated(rawFusions)]
+head(uniqueFusions)
+length(uniqueFusions) # number of fusions now
+```
+
+Counting Total Number of Gene Pairs
+--------------------------------------------------------
+Before going any further, I will count how many pairs there are in all the
+fusions before messing with the data. This will tell us the absolute difference
+between the number of gene pairs we had originally and the pairs we ended up
+with after cleaning up the data. This also provides feedback on if there are
+some fusions we should keep or if the consideration of more complex cases does
+not matter.
+
+```{r countTotalPairs}
+
+```
+
+Remove Unknown Breakpoints
+--------------------------------------------------------
+```{r unknownBreakpoints}
+uniqueKnownBreakpointFusions <- grep("\\?",
+                                    uniqueFusions,
+                                    value=TRUE,
+                                    invert=TRUE)
+head(uniqueKnownBreakpointFusions)
+length(uniqueKnownBreakpointFusions) # number of fusions now
+```
+
+Remove Insertions
+--------------------------------------------------------
+There are some gene fusions that have inserted genetic sequences. Let us remove
+them for simplicity.
+
+We have not separated the fusions between simple and complex so this subset of
+the data with insertions will contain both simple and complex fusions.
+
+```{r removeInsertions}
+# save insertions in another matrix
+insertions <- grep("_ins",
+                   uniqueKnownBreakpointFusions,
+                   value=TRUE)
+head(insertions) # sample of insertions
+length(insertions) # how many insertions
+
+# remove insertions
+uniqueKnownBreakpointFusions <- grep("_ins",
+                                     uniqueKnownBreakpointFusions,
+                                     value=TRUE,
+                                     invert=TRUE) # keep non-insertions
+head(uniqueKnownBreakpointFusions)
+length(uniqueKnownBreakpointFusions) # number of fusions now
+```
+
+Remove Intronic Breakpoints
+--------------------------------------------------------
+We will remove the fusions with breakpoints with upstream and downstream
+breakpoints, as indicated with `+` and `-` signs. This will simplify parsing.
+In the future, these can be added back in to get a more complete picture, but
+for now we can remove them.
+
+```{r removeDownUpBreakpoints}
+uniqueKnownBreakpointFusions <- grep("\\+",
+               uniqueKnownBreakpointFusions,
+               value = TRUE,
+               invert = TRUE)
+uniqueKnownBreakpointFusions <- grep("\\-",
+                    uniqueKnownBreakpointFusions,
+                    value = TRUE,
+                    invert = TRUE)
+length(uniqueKnownBreakpointFusions)
+```
+
+Remove Inverted Fusions
+--------------------------------------------------------
+There are some fusions that have inverted elements in them. We wish to ignore
+those cases for now. These fusions with inverted elements are labeled with an
+"o" before the gene name, like before the second gene here:
+
+> FUS{ENST00000254108}:r.1_628_oCREB3L2{ENST00000330387}:r.972_984_CREB3L2{ENST00000330387}:r.1006_7412
+
+```{r removeInverted}
+uniqueKnownBreakpointFusions <- grep("_o",
+                                     uniqueKnownBreakpointFusions,
+                                     value = TRUE,
+                                     invert = TRUE)
+length(uniqueKnownBreakpointFusions)
+```
+
+Discern Complex Gene Fusions from Simple Ones
+--------------------------------------------------------
+The fusions we want are the ones involving pairs of genes. To make the analysis
+easier, we will put the fusions into two categories: complex and simple. The
+simple ones have just a pair of genes and nothing too complicated in the syntax.
+The complicated case might involve only two genes in the fusion but has been
+combined more than once. We will consider these but right now, we will complete
+one step at a time, namely separate the simple from the complicated cases.
+
+```{r complexFusions}
+library("stringr") # load appropriate package first
+
+allSizes <- str_locate_all(uniqueKnownBreakpointFusions, ":")
+n <- length(allSizes)
+nArray <- array(data = NA, dim = n) # T/F array
+
+for (i in 1:n) { # loop through all elements
+    if (dim(allSizes[[i]])[1] > 2) { # if gene fusion is complex
+        nArray[i] <- FALSE # don't include it
+        next
+    } else {
+        nArray[i] <- TRUE # include it otherwise
+    }
+}
+# simple cases
+simpleUniqueFusions <- uniqueKnownBreakpointFusions[nArray]
+
+# complex cases
+complexUniqueFusions <- uniqueKnownBreakpointFusions[!nArray]
+
+# summary of simple
+head(simpleUniqueFusions)
+length(simpleUniqueFusions) # the number of simple gene fusions so far
+
+# summary of complex
+head(complexUniqueFusions)
+length(complexUniqueFusions)
+```
+
+Separate Simple Elements
+--------------------------------------------------------
+We want to separate the elements into 6 columns.
+
+> 5' gene | ID | 5' start | 5' end | 3' gene | ID | 3' start | 3' end
+
+The start and end numbers are the breakpoints. At the same time, we want to
+preserve the Ensembl ID numbers for future use.
+
+```{r separateElements}
+#  make empty matrix to put new data into
+columns <- 8 # number of columns based on the syntax above
+rows <- length(simpleUniqueFusions) # number of fusions we're working with
+newDescription <- matrix(ncol=columns, nrow=rows) # create matrix we will us
+
+# separate string out using substitution
+for (i in 1: rows) {
+    pattern <- "(.+){(.+)}:r.([0-9]+)_([0-9]+)_(.+){(.+)}:r.([0-9]+)_([0-9]+)"
+    newDescription[i,1] <- sub(pattern,
+            "\\1", # want the first set of parentheses
+            simpleUniqueFusions[i], # the string to use
+            perl = TRUE # use Perl regex
+        )
+    newDescription[i,2] <- sub(pattern,
+            "\\2", # want the second set of parentheses
+            simpleUniqueFusions[i], # the string to use
+            perl = TRUE # use Perl regex
+        )
+    newDescription[i,3] <- sub(pattern,
+            "\\3", # want the third set of parentheses
+            simpleUniqueFusions[i], # the string to use
+            perl = TRUE # use Perl regex
+        )
+    newDescription[i,4] <- sub(pattern,
+            "\\4", # want the fourth set of parentheses
+            simpleUniqueFusions[i], # the string to use
+            perl = TRUE # use Perl regex
+        )
+    newDescription[i,5] <- sub(pattern,
+            "\\5", # want the fifth set of parentheses
+            simpleUniqueFusions[i], # the string to use
+            perl = TRUE # use Perl regex
+        )
+    newDescription[i,6] <- sub(pattern,
+            "\\6", # want the sixth set of parentheses
+            simpleUniqueFusions[i], # the string to use
+            perl = TRUE # use Perl regex
+        )
+    newDescription[i,7] <- sub(pattern,
+            "\\7", # want the seventh set of parentheses
+            simpleUniqueFusions[i], # the string to use
+            perl = TRUE # use Perl regex
+        )
+    newDescription[i,8] <- sub(pattern,
+            "\\8", # want the eighth set of parentheses
+            simpleUniqueFusions[i], # the string to use
+            perl = TRUE # use Perl regex
+        )
+}
+
+head(newDescription) # sample of the fusions
+dim(newDescription)[1] # how many fusions do we have
+
+# data exploration
+write.table(newDescription, "../results/newDescription.txt")
+```
+
+Unique Simple Gene Pairings
+--------------------------------------------------------
+We have all the unique gene fusions but we do not have all the unique gene
+fusion pairings. Let us see how many unique gene pairings we have.
+
+```{r uniquePairings}
+simplePairings <- cbind(newDescription[, 1], # 5' gene
+                        newDescription[, 5]) # 3' gene
+uniquePairings <- simplePairings[!duplicated(simplePairings), ]
+head(uniquePairings) # sample what we have
+dim(uniquePairings)[1] # number of simple unique gene fusion pairs
+```
+
+Dealing with Complex Cases
+--------------------------------------------------------
+Here we will deal with the complex cases that were saved from earlier. Here we
+will only consider pairs of complex gene fusions. The plan is to parse through
+each fusion and count the number of genes in each case. If there are more than
+two genes in a single gene fusion, then it will not be counted.
+
+Because of how the string processing function in R works, I will still need to
+separate the complex gene fusions a little bit.
+
+Count Number of Genes in Complex Cases
+--------------------------------------------------------
+The way the string functions work in R as of now force me to count the number of
+genes in the fusion before moving on to see if there exist a pairing or a group
+of genes.
+
+```{r countGenes}
+length(complexUniqueFusions) # need this number to double check out totals
+allSizesAgain <- str_locate_all(complexUniqueFusions, ":")
+n <- length(allSizesAgain)
+nArray <- array(data = NA, dim = n) # T/F array
+
+for (i in 1:n) { # loop through all elements
+    if (dim(allSizesAgain[[i]])[1] == 4) { # if gene fusion has more than 3 parts
+        nArray[i] <- FALSE # reclassify it
+        next
+    }
+    if (dim(allSizesAgain[[i]])[1] == 3) {
+        nArray[i] <- TRUE # know that it comprises of three groups
+    }
+}
+
+# fusion with three parts
+threeFusionsRaw <- complexUniqueFusions[nArray] # complex fusions w/ 3 parts
+length(threeFusionsRaw) # number of fusions with three parts
+head(threeFusionsRaw) # a peek at the data
+
+# fusion with more than three parts
+fourFusions <- complexUniqueFusions[!nArray] # complex fusions w/ >3 parts
+length(fourFusions) # number of fusions with four parts
+head(fourFusions) # sampling of the fusions with four parts
+```
+
+After separating the dataset into fusions with three parts and another only with
+four parts, we still have the correct total. Thus, there are no gene fusions in
+our dataset that have more than four parts together we have to worry about.
+
+Remove Breakpoints with Parentheses
+--------------------------------------------------------
+Upon looking at some of the fusions with three components, there are some with
+parentheses in the breakpoint regions. I cannot find out what this information
+means yet. I can only guess that this means that those breakpoints are not
+certain. Some of them are ranges:
+
+> `r threeFusionsRaw[9]`.
+
+Others are just enclosed in parentheses:
+
+> `r threeFusionsRaw[13]`.
+
+```{r saveParentheses}
+nArray <- array(data = NA, dim = length(threeFusionsRaw)) # get T/F array
+parenFusions <- grep("\\(", threeFusionsRaw, value=TRUE) # save paren fusions
+head(parenFusions) # let's take a look
+length(parenFusions) # how many parentheses fusions do we have
+```
+
+Now we will save the normal fusions without the parerntheses.
+
+```{r removeParentheses}
+threeFusionsRaw <- grep("\\(", threeFusionsRaw, value=TRUE, invert=TRUE)
+head(threeFusionsRaw) # see if the data looks right
+length(threeFusionsRaw) # how many do we have left
+```
+
+Separate Complex Gene Fusion Strings and Filter Pairs with Three Genes
+--------------------------------------------------------
+```{r pairGeneFusionsThree}
+head(threeFusionsRaw) # see a bit of the data
+length(threeFusionsRaw) # see how many three gene'd fusions we have
+nArray <- array(data = NA, dim = length(threeFusionsRaw)) # TRUE/FALSE array
+pairsMatrix <- c(); # empty
+
+otherPairs <- c();
+for (i in 1:length(threeFusionsRaw)) {
+    pattern <- "(.+){(.+)}:r\\.([0-9]+)_([0-9]+)_(.+){(.+)}:r\\.([0-9]+)_([0-9]+)_.+{.+}:r\\.[0-9]+_[0-9]+"
+
+    # first gene information
+    first <- sub(pattern,
+            "\\1", # want the first set of parentheses
+            threeFusionsRaw[i], # the string to use
+            perl = TRUE # use Perl regex
+        )
+    firstID <- sub(pattern, "\\2", threeFusionsRaw[i], perl = TRUE)
+    firstStart <- sub(pattern, "\\3", threeFusionsRaw[i], perl = TRUE)
+    firstEnd <- sub(pattern, "\\4", threeFusionsRaw[i], perl = TRUE)
+
+    # second gene information
+    second <- sub(pattern,
+            "\\5", # want the second set of parentheses
+            threeFusionsRaw[i], # the string to use
+            perl = TRUE # use Perl regex
+        )
+    secondID <- sub(pattern, "\\6", threeFusionsRaw[i], perl = TRUE)
+    secondStart <- sub(pattern, "\\7", threeFusionsRaw[i], perl = TRUE)
+    secondEnd <- sub(pattern, "\\8", threeFusionsRaw[i], perl = TRUE)
+
+    # regex does not allow more than nine groups, so I gotta redefine the
+    # pattern so that I can extract the rest of the information
+    pattern <- ".+{.+}:r\\.[0-9]+_[0-9]+_.+{.+}:r\\.[0-9]+_[0-9]+_(.+){(.+)}:r\\.([0-9]+)_([0-9]+)"
+
+    # three gene information
+    third <- sub(pattern,
+            "\\1", # want the third set of parentheses
+            threeFusionsRaw[i], # the string to use
+            perl = TRUE # use Perl regex
+        )
+    thirdID <- sub(pattern, "\\2", threeFusionsRaw[i], perl = TRUE)
+    thirdStart <- sub(pattern, "\\3", threeFusionsRaw[i], perl = TRUE)
+    thirdEnd <- sub(pattern, "\\4", threeFusionsRaw[i], perl = TRUE)
+
+    # put information together
+    otherPairs <- rbind(otherPairs,
+                        c(first, firstID, firstStart, firstEnd,
+                          second, secondID, secondStart, secondEnd,
+                          third, thirdID, thirdStart, thirdEnd),
+                        deparse.level=0)
+
+    # figure out if pairing or not
+    if (sum(duplicated(c(first, second, third))) == 1) {
+        nArray[i] <- TRUE # keep
+        allThree <- c(first, second, third) # put all three together
+        uniqueThreePairs <- allThree[!duplicated(allThree)] # find unique pair
+
+        # make pairs matrix
+        pairsMatrix <- rbind(pairsMatrix,
+                             uniqueThreePairs,
+                             deparse.level = 0)
+    } else {
+        nArray[i] <- FALSE # do not keep
+    }
+}
+
+# only keep pairs
+otherPairs <- otherPairs[nArray,]
+head(otherPairs) # did we filter and separate correctly
+
+# get gene pairings
+head(pairsMatrix)
+dim(pairsMatrix)[1] # number of three part fusions
+```
+
+Separate Complex Gene Fusion Strings and Filter Pairs with Four Genes
+--------------------------------------------------------
+There is only one gene fusion that has made it thus far in the filtering so we
+can separate the string personally on this one string.
+
+If the above filtering process changes, this part may need to be revised to
+accommodate the number of strings to parse.
+
+```{r pairGeneFusionsFour}
+initSeparate <- str_extract_all(string = fourFusions,
+                               pattern = "[^\\.:\\{r\\_\\}]+")
+initSeparate <- initSeparate[[1]]
+initSeparate # see what we got
+fourPair <- c(initSeparate[1], initSeparate[9]) # the two genes in the fusion
+pairsMatrix <- rbind(pairsMatrix,
+                     fourPair)
+
+# check data
+tail(pairsMatrix) # note the addition to the end of the pairs matrix
+dim(pairsMatrix)[1] # number of complex pairs
+```
+
+Complete Unique Pairings
+--------------------------------------------------------
+Here we need to put all three datasets back together and then run the uniqueness
+algorithm on it to find the complete list of unique gene pairings in the gene
+fusions in our dataset.
+
+```{r compileData}
+allPairsRaw <- rbind(uniquePairings,
+                  pairsMatrix,
+                  deparse.level = 0 # no labels
+                  )
+allUniquePairs <- allPairsRaw[!duplicated(allPairsRaw), ]
+head(allUniquePairs) # sample unique pairs data
+dim(allUniquePairs)[1] # how many unique pairs
+```
+
+Load and Discuss Ensembl Genome Dataset
+-------------------------------------------------------
+We have decided to stick with the Ensembl genome set to map to the COSMIC data
+so we can figure out the mechanism for each gene fusion.
+
+Each gene fusion can occur among three different mechanisms:
+
+- a strongly expressed promotor of one gene being fused with a second gene, thus
+  the second gene being expressed more
+- a conjoining between the 5'-most end of a gene with the 3'-more end of a
+  second gene
+- "the fusion results in the truncation or loss of function of a tumor
+  suppressor gene"
+
+We want to focus on the second case of two functional pieces of genes are fused
+instead of a gain or loss of function, in the case of the other two choices.
+
+```{r loadEnsemblData, cache=TRUE}
+ensemblData <- read.csv(file = "../raw-data/ensembl_GRCh37_2014.08.29.csv",
+                        header = TRUE)
+head(ensemblData) # the top of the data
+dim(ensemblData)[1] # how many entries we have
+```
+
+Now that we have the data in R, we can mess around with it. What we really need
+from this dataset is the Ensembl trascript ID (because this is what is in the
+COSMIC file to uniquely identify each component of the fusion), and the 5' UTR
+start and end points.
+
+The COSMIC dataset gives me the breakpoints of the 5' gene. To figure out the
+mechanism, I need to get the 5' breakpoint and compare that to the difference
+in the 5' UTR start and end points. If the 5' breakpoint of the 5' gene in the
+fusion is less than the difference in the UTR start and end, then the gene
+fusion is a strong promoter gene fusion, which we do not want.
+
+Filter and Save Fusions with Non-Ensembl ID (Two Part Fusions)
+--------------------------------------------------------
+Looking at the dataset, we can observe some fusions with non-Ensembl IDs. These
+IDs are from NCBI. It will be more complicated to take these into account for
+now so we will filter them out and save them for later use.
+
+Here we will filter and save fusions with two parts. Three and four part fusions
+will be handled in the proceeding sections.
+
+```{r nonEnsemblIDTwoGenes}
+# filter those with underscores for five prime gene, will fix later
+enID <- grep("ENST",
+            newDescription[,2],
+            invert = FALSE)
+nonEnID <- grep("ENST",
+                newDescription[,2],
+                invert = TRUE)
+
+# save non-Ensembl ID fusions
+newDescriptionNonEnID <- newDescription[nonEnID,]
+dim(newDescriptionNonEnID)[1] # how many non-Ensembl fusions
+
+# save Ensembl ID fusions
+newDescription <- newDescription[enID,]
+dim(newDescription)[1] # how many Ensembl fusions in first gene
+
+# add in filtered three prime genes as well
+enID <- grep("ENST",
+             newDescription[,6],
+             invert = FALSE)
+nonEnID <- grep("ENST",
+                newDescription[,6],
+                invert = TRUE)
+
+# save non-Ensembl ID fusions
+newDescriptionNonEnID <- rbind(newDescriptionNonEnID,
+                               newDescription[nonEnID,])
+head(newDescriptionNonEnID)
+dim(newDescriptionNonEnID)[1] # how many non-Ensembl fusions
+
+# save Ensembl ID Fusions
+newDescription <- newDescription[enID,]
+head(newDescription)
+dim(newDescription)[1] # how many Ensembl ID'd fusions
+```
+
+Filter and Save Fusions with Non-Ensembl ID (Three Part Fusions)
+--------------------------------------------------------
+Here we will perform the algorithm as mentioned above, except we will deal with
+three part fusions.
+
+```{r nonEnsemblIDThreeGenes}
+# filter first gene part
+enID <- grep("ENST",
+            otherPairs[,2],
+            invert = FALSE)
+nonEnID <- grep("ENST",
+                otherPairs[,2],
+                invert = TRUE)
+
+# save non-Ensembl ID fusions
+otherPairsNonEnID <- otherPairs[nonEnID,]
+dim(otherPairsNonEnID)[1] # number of non-Ensembl fusions
+
+# save Ensembl ID fusions
+otherPairs <- otherPairs[enID,]
+dim(otherPairs)[1] # number of Ensembl ID'd fusions
+
+# filter second gene for non-Ensembl IDs
+enID <- grep("ENST",
+             otherPairs[,6],
+             invert = FALSE)
+nonEnID <- grep("ENST",
+                otherPairs[,6],
+                invert = TRUE)
+
+# save second non-Ensembl ID fusions
+otherPairsNonEnID <- rbind(otherPairsNonEnID,
+                           otherPairs[nonEnID,])
+dim(otherPairsNonEnID)[1]
+
+# save Ensembl ID Fusions
+otherPairs <- otherPairs[enID,]
+dim(otherPairs)[1]
+
+# filter third gene for non-Ensembl IDs
+enID <- grep("ENST",
+             otherPairs[ ,10],
+             invert = FALSE)
+nonEnID <- grep("ENST",
+                otherPairs[ ,10],
+                invert = TRUE)
+
+# save third non-Ensembl ID fusions
+otherPairsNonEnID <- rbind(otherPairsNonEnID,
+                               otherPairs[nonEnID,])
+head(otherPairsNonEnID)
+dim(otherPairsNonEnID)[1] # how many three part fusions we have w/o Ensembl IDs
+
+# save Ensembl ID in fusions with three parts
+otherPairs <- otherPairs[enID, ]
+head(otherPairs)
+dim(otherPairs)[1] # how many three part fusions we have
+```
+
+Plan on Determining Mechanism
+--------------------------------------------------------
+We need to figure out if the fusions we have at this point have any UTR parts as
+the sole 5' or 3' gene in the fusion. To do this we will focus on the 5' UTR and
+the 3' UTR points of the Ensembl data.
+
+The 5' gene case is a bit simpler. Manual looking at the data, all the 5' gene
+partners start at the beginning of the gene and have a breakpoint downstream. So
+all we need to check is if the downstream breakpoint is greater than the length
+of the 5' UTR, which we will need to calculate.
+
+The 3' gene case is a bit more difficult. We will first need to calculate the
+total length of the gene to figure out if the gene partner actually goes to the
+end of the gene. Once we confirm this, we can then add up the 3' UTR lengths and
+compare it with the breakpoint length given.
+
+Mechanism of Two Part Fusions
+--------------------------------------------------------
+```{r mechanism, cache=TRUE}
+nArray <- matrix(data = NA, nrow = dim(newDescription)[1], ncol = 4)
+
+for (i in 1:dim(newDescription)[1]) { # loop through all fusions
+    ## get 5' gene partner and UTR information
+    fiveGeneIn2 <- newDescription[i,2] # get Ensembl ID for 5' gene
+    focusGene5 <- ensemblData[ensemblData$Ensembl_Transcript_ID == fiveGeneIn2,]
+    focusUTR5 <- focusGene5[!is.na(focusGene5$X5_UTR_Start),] # remove NA values
+
+    # calculate UTR length for comparison
+    fiveUTRLen <- abs(sum(focusUTR5[,3] - focusUTR5[,4])) + dim(focusUTR5)[1]
+
+    # check 5' gene partner UTR (NOTE CHANGE 1 INDEX)
+    if (as.numeric(newDescription[i,4]) > fiveUTRLen) {
+        # breakpoint greater than UTR length
+        nArray[i,1] <- TRUE # keep
+    } else {
+        # breakpoint less than UTR length
+        nArray[i,1] <- FALSE # ignore
+    }
+
+    # get 3' gene partner, CDS length, and UTR information
+    threeGeneIn2 <- newDescription[i,6] # get Ensembl ID for 3' gene
+    focusGene3 <- ensemblData[ensemblData$Ensembl_Transcript_ID == threeGeneIn2,]
+
+    # calculate CDS length
+    cdsLen <- abs(sum(focusGene3$Exon_Chr_Start_bp -
+                      focusGene3$Exon_Chr_End_bp)) + dim(focusGene3)[1]
+
+    ## check CDS length vs gene breakpoint end lengths
+    nArray[i,2] <- cdsLen == as.numeric(newDescription[i,8]) # end of 3' gene
+    nArray[i,3] <- cdsLen - as.numeric(newDescription[i,8]) # get length diff
+
+    # get breakpoint differences
+    threeFuseLen <- abs(as.numeric(newDescription[i,8]) -
+                    as.numeric(newDescription[i,7])) + 1
+    focusUTR3 <- focusGene3[!is.na(focusGene3$X3_UTR_Start),] # remove NA values
+    threeUTRLen <- abs(sum(focusUTR3$X3_UTR_Start -
+                        focusUTR3$X3_UTR_End)) + dim(focusUTR3)[1]
+
+    ## check 3' breakpoint
+    if (threeFuseLen > threeUTRLen) {
+        nArray[i,4] <- TRUE
+    } else {
+        nArray[i,4] <- FALSE
+    }
+
+    # change factors into numeric
+    # as.numeric(levels(x$V7))[x$V7]
+}
+colnames(nArray) <- c("fivePrime", "threePrimeLength", "3EndDiff", "3EndBreak")
+```
+
+Load Functional Interaction Network Data
+--------------------------------------------------------
+```{r loadFI, cache=TRUE}
+fi <- read.delim("../raw-data/FIsInGene_121013_with_annotations.txt")
+dim(fi) # see how large file is
+head(fi) # see what it looks like
+```
+
+Graph Analysis Plan
+--------------------------------------------------------
+Ultimately, we wish to do an analysis on the gene fusion itself. However, let us
+first perform a graph analysis on the individual genes that are involved in the
+gene fusions.
+
+Three types of analyses will be performed on the genes:
+
+- degree centrality - ranking the genes based on their degree
+- closeness centrality - ranking genes based on distance between others
+- betweenness centrality - rank genes based on their role 'between' others
+- Google's Pagerank measures
+
+After we perform an analysis on the individual genes, the plan is to perform an
+anlysis on the fusions are a whole.
+
+Extract Unique List of Genes in Fusions
+--------------------------------------------------------
+The unique gene pairs are in the matrix `allUniquePairs`. We need to get just the
+unique genes that appear.
+
+```{r uniqueGenes}
+genesTF <- c(allUniquePairs[ ,1], allUniquePairs[ ,2]) # put genes in one array
+allUniqueGenes <- genesTF[!duplicated(genesTF)] # get unique list
+head(allUniqueGenes)
+length(allUniqueGenes)
+```
+
+Interaction Network Exploration
+--------------------------------------------------------
+Let us see how many vertices and edges there exist in this network.
+
+```{r graph}
+library(igraph)
+
+# put data in data frame so it can be put into graph data structure
+fi_graph_df <- data.frame(
+                    cbind(
+                        as.character(fi[,1]), # first gene column
+                        as.character(fi[,2]) # second gene column
+                        )
+                    )
+
+fi_graph <- graph.data.frame(fi_graph_df)
+vcount(fi_graph) # number of vertices in network
+ecount(fi_graph) # number of edges in network
+
+# analyze distribution of the degree of genes
+geneDegrees <- degree(fi_graph)
+logGeneDegrees <- log10(geneDegrees) # calculate log10-degree of genes
+hist(logGeneDegrees,
+     main = "Distribution of Gene Degrees",
+     xlab = "Log10-Degree",
+     ylab = "Frequency") # make histogram of degrees
+
+# analyze closeness of genes
+fi_closeness <- closeness(fi_graph)
+hist(x = fi_closeness,
+     main = "Histogram of Closeness in the Functional Interaction Network")
+```
+
+Degree Centrality of Genes in Fusions
+--------------------------------------------------------
+```{r degreeCentrality}
+# focus on genes in fusions
+fusionDegrees <- geneDegrees[allUniqueGenes] # get only fusion degrees
+length(fusionDegrees) # number of fusion genes
+fusionDegrees <- fusionDegrees[!is.na(fusionDegrees)] # remove NA values
+length(fusionDegrees) # number of fusion genes after filtering
+fusionsInFI <- names(fusionDegrees) # get genes in FI network
+
+# focus on non-Fusion genes
+otherGeneDegrees <- geneDegrees[setdiff(names(geneDegrees), allUniqueGenes)]
+length(otherGeneDegrees)
+
+# plot histograms of degree centralities of fusion genes and non-fusion genes
+par(mfrow = c(2,2))
+hist(x = fusionDegrees,
+     main = "Degree Centrality (Gene Fusions)",
+     xlab = "Degrees",
+     xlim =  c(0,600))
+hist(x = log10(fusionDegrees),
+     main = "Log10-Degree Centrality (Gene Fusion)",
+     xlab = "log10-Degrees",
+     xlim =  c(0,3),
+     breaks = 10)
+hist(x = otherGeneDegrees,
+     main = "Degree Centrality (Non-Fusion Genes)",
+     xlab = "Degrees",
+     xlim = c(0,600))
+hist(x = log10(otherGeneDegrees),
+     main = "Log10-Degree Centrality (Non-Fusion Genes)",
+     xlab = "log10-Degrees",
+     xlim = c(0,3),
+     breaks = 20)
+```
+
+Closeness Centrality of Genes in Fusions
+--------------------------------------------------------
+```{r geneCloseness}
+geneCloseness <- closeness(graph = fi_graph) # all genes in analysis
+head(geneCloseness)
+otherGeneCloseness <- geneCloseness[setdiff(names(geneCloseness),
+                                            allUniqueGenes)]
+
+# put two histograms on one plot
+par(mfrow = c(2,1))
+
+# plot analysis for non-fusion genes
+hist(x = otherGeneCloseness,
+     main = "Histogram of Non-Fusion Gene Closeness Values",
+     xlim = c(5.0e-09, 3.5e-08))
+
+# plot analysis for fusion genes
+fusionGeneCloseness <- closeness(graph = fi_graph, vids = fusionsInFI)
+hist(x = fusionGeneCloseness,
+     main = "Histogram of Fusions' Closeness",
+     xlim = c(5.0e-09, 3.5e-08))
+
+# put two boxplots on one plot
+par(mfrow = c(2,1))
+boxplot(x = log10(otherGeneCloseness), horizontal = TRUE)
+title(main = "Non-Fusion Genes BoxPlot for Log10-Closeness")
+boxplot(x = log10(fusionGeneCloseness), horizontal = TRUE)
+title(main = "Fusions Boxplot for Log10-Closeness")
+```
+
+Betweenness Centrality of Genes in Fusions
+--------------------------------------------------------
+```{r geneBetweenness}
+# calculate betweenness values for fusions and all genes
+geneBetween <- betweenness(graph = fi_graph)
+otherGeneBetween <- geneBetween[setdiff(names(geneBetween),
+                                        allUniqueGenes)]
+fusionBetween <- betweenness(graph = fi_graph, v = fusionsInFI)
+
+# put two plots in one
+par(mfrow = c(2,1))
+
+# all other genes
+hist(log10(otherGeneBetween),
+     breaks = 15,
+     main = "Histogram of Non-Fusion Betweenness",
+     xlab = "Log10-Betweenness",
+     xlim = c(-2,6))
+# genes in fusions
+hist(log10(fusionBetween),
+     breaks = 15,
+     main = "Histogram of Fusion Betweenness",
+     xlab = "Log10-Betweenness",
+     xlim = c(-2,6))
+
+# put two boxplots on one plot
+par(mfrow = c(2,1))
+boxplot(x = log10(otherGeneBetween), horizontal = TRUE)
+title(main = "Non-Fusion Genes BoxPlot for Log10-Betweenness")
+boxplot(x = log10(fusionBetween), horizontal = TRUE)
+title(main = "Fusions Boxplot for Log10-Betweenness")
+```
+
+```{r betweennessKS}
+ks.test(log10(fusionBetween), log10(otherGeneBetween))
+x <- rnorm(15)
+ks.test(x, y = rnorm)
+```
+
+Session Information
+--------------------------------------------------------
+
+```{r sessionInfo}
+sessionInfo()
+```
