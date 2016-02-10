@@ -74,7 +74,7 @@ $ make
 ## NOTE: Error in COMIC Data
 
 If you try and compile and run the `cosmic_fusion_extraction.Rmd` analysis, it
-will not fail but it will be if you start with the raw data. The reason being is
+will not fail but it will if you start with the raw data. The reason being is
 that the COSMIC gene fusion data set (`CosmicFusionExport_v69_310514.tsv`) is
 missing an open bracket on Line 11620.
 
