@@ -71,7 +71,7 @@ $ make
           separated file."
     - Source: cancer.sanger.ac.uk/cancergenome/projects/cosmic/download
 
-## NOTE: Error in COMIC Data
+## NOTE: Error in COSMIC Data
 
 If you try and compile and run the `cosmic_fusion_extraction.Rmd` analysis, it
 will not fail but it will if you start with the raw data. The reason being is
